@@ -38,16 +38,26 @@ pc, err := lc.ListenPacket(ctx, "udp4", ":0")   // hand pc to quic-go
 
 ## How it works
 
-picnic follows [curl's](https://everything.curl.dev/usingcurl/connections/interface.html)
-strategy, which is the one approach that works everywhere:
+picnic binds the device itself with the platform's interface-bind socket option.
+This steers egress *without* binding the socket's address, so it composes with a
+later `connect` (dialer) or `bind` (listener) — which is why one mechanism serves
+both the stream and packet paths.
 
-| Platform | Mechanism |
-|----------|-----------|
-| Linux | `SO_BINDTODEVICE` — binds the device itself; the kernel selects the source address (needs `CAP_NET_RAW`) |
-| Linux without `CAP_NET_RAW`, macOS, Windows, BSD | bind a source address from the interface, matching the destination's family |
+| Platform | Mechanism | Privilege |
+|----------|-----------|-----------|
+| Linux | `SO_BINDTODEVICE` | needs `CAP_NET_RAW` |
+| macOS | `IP_BOUND_IF` / `IPV6_BOUND_IF` | none |
+| Windows | `IP_UNICAST_IF` / `IPV6_UNICAST_IF` | none |
 
-You never pass an IP version: picnic derives the family from the dial's network
-string (`tcp4`/`tcp6`) or, failing that, the destination address.
+When the device option is unavailable (Linux without `CAP_NET_RAW`, or a BSD that
+has no such option), **`BindDialer`** falls back to binding a source address from
+the interface. A dialer can do this because `connect` supplies the destination; a
+listener cannot, because `ListenPacket` binds the socket itself — so on those
+platforms `BindListenConfig` leaves the socket un-bound to the interface.
+
+You never pass an IP version: picnic derives the family (which selects the v4 vs
+v6 option) from the dial's network string (`tcp4`/`tcp6`) or the destination
+address.
 
 ## Caveats
 
@@ -55,11 +65,12 @@ string (`tcp4`/`tcp6`) or, failing that, the destination address.
   both a global unicast (GUA) and a unique local (ULA) IPv6 address, picnic
   prefers the GUA, since a ULA source cannot reach a global destination — but no
   in-process source selection is perfect without the route. For *guaranteed*
-  egress, use the Linux device-bind path (grant `CAP_NET_RAW`) or pair source
+  egress, use the device-bind path (on Linux, grant `CAP_NET_RAW`) or pair source
   binding with OS policy routing.
-- Native device binding via `IP_BOUND_IF` (macOS) / `IP_UNICAST_IF` (Windows) is
-  intentionally **not** used in v1, matching curl. It may be added later — behind
-  the cross-platform CI matrix that exists precisely to validate it.
+- **`BindListenConfig` needs the device option.** On Linux without `CAP_NET_RAW`,
+  or a BSD with no per-socket interface bind, a `ListenPacket` socket cannot be
+  interface-bound (its own bind precludes the source-address fallback). macOS and
+  Windows need no privilege, so the common QUIC targets are covered.
 
 ## Why a separate package
 
