@@ -299,6 +299,10 @@ func TestBindDialer_LoopbackDial(t *testing.T) {
 // socket through it, and round-trips a datagram on loopback.
 func TestBindListenConfig_LoopbackPacket(t *testing.T) {
 	lo := loopbackInterface(t)
+	if ifc, err := net.InterfaceByName(lo); err == nil {
+		// The device-bind path keys off the index; log it for diagnosis.
+		t.Logf("loopback interface %q index=%d flags=%s", lo, ifc.Index, ifc.Flags)
+	}
 
 	rx, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -313,6 +317,9 @@ func TestBindListenConfig_LoopbackPacket(t *testing.T) {
 
 	tx, err := lc.ListenPacket(context.Background(), "udp4", "127.0.0.1:0")
 	if err != nil {
+		// A "bind: invalid argument" here means the listen path attempted a
+		// source-address bind, which collides with ListenPacket's own bind;
+		// BindListenConfig must use the device option only.
 		t.Fatalf("bound ListenPacket through %q: %v", lo, err)
 	}
 	defer tx.Close()

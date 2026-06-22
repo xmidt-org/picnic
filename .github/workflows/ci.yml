@@ -4,60 +4,17 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
-
-permissions:
-  contents: read
+  workflow_dispatch:
 
 jobs:
-  # The reason this package is its own repo: exercise the real per-OS socket
-  # paths on real runners, not just Linux. macOS/Windows and non-root Linux take
-  # the source-bind fallback; together they cover osBind/bindSource.
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-      - run: go vet ./...
-      - run: go test -race -covermode=atomic -coverprofile=cover.out ./...
-      - uses: codecov/codecov-action@v5
-        with:
-          files: cover.out
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  # The SO_BINDTODEVICE success path is only reachable on Linux with CAP_NET_RAW,
-  # so run a capability-granted test binary to cover the device-bind branch.
-  linux-device-bind:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-      - run: go test -c -covermode=atomic -o picnic.test .
-      - run: sudo setcap cap_net_raw+ep ./picnic.test
-      - run: ./picnic.test -test.v -test.coverprofile=cover-device.out
-      - uses: codecov/codecov-action@v5
-        with:
-          files: cover-device.out
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  # Compile the BSD path (no hosted runners) to keep build tags honest.
-  crossbuild:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        goos: [freebsd, openbsd, netbsd, dragonfly]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-      - run: GOOS=${{ matrix.goos }} go build ./...
+  ci:
+    # Standard xmidt-org checks: gofmt (style), golangci-lint, REUSE/license,
+    # copyright, unit tests (-race) + coverage, build, and tagged releases.
+    # Cross-platform (macOS/Windows/BSD) and CAP_NET_RAW coverage live in
+    # cross-platform.yml, which shared-go does not provide.
+    uses: xmidt-org/shared-go/.github/workflows/ci.yml@a0bb9aa6abbab3aedfbaecd4625c6949495c63df # v4.12.5
+    with:
+      release-type: library
+    secrets: inherit

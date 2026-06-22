@@ -12,21 +12,27 @@
 // Use BindDialer for the stream path, BindListenConfig for the packet path, or
 // Control to attach binding to anything else.
 //
-// The bind decision uses the same strategy as curl's --interface option: on
-// Linux it binds the socket to the device with SO_BINDTODEVICE and lets the
-// kernel select a source address; on every other platform — or on Linux when
-// SO_BINDTODEVICE is unavailable (e.g. no CAP_NET_RAW) — it binds a source
-// address belonging to the interface. Only that prefer-device-else-source
-// decision is curl's; which source address picnic picks is its own policy (it
-// prefers a global unicast address — see the caveat below). The destination's
-// family is taken from the dial's network string ("tcp4"/"tcp6") or, failing
-// that, the destination IP, so callers never pass an IP version explicitly.
+// picnic binds the device itself with the platform's interface-bind socket
+// option — SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS,
+// IP_UNICAST_IF/IPV6_UNICAST_IF on Windows. These steer egress without binding
+// the socket's address, so they compose with a later connect or bind. Only
+// Linux's option requires elevated privilege (CAP_NET_RAW); the others do not.
+//
+// When the device option is unavailable (Linux without CAP_NET_RAW, or a
+// platform with no such option), BindDialer falls back to binding a source
+// address belonging to the interface — a dialer can do this because connect
+// supplies the destination, but a ListenConfig cannot, since ListenPacket binds
+// the socket itself. So that source fallback applies to the dialer path only.
+//
+// The destination's family (which selects the v4 vs v6 option) is taken from
+// the dial's network string ("tcp4"/"tcp6") or, failing that, the destination
+// IP, so callers never pass an IP version explicitly.
 //
 // Caveat: the source-address fallback is destination-blind. On an interface
 // holding both a global unicast address (GUA) and a unique local address (ULA),
 // picnic prefers the GUA, since a ULA source cannot reach a global destination;
 // but no in-process source selection can be perfect without the route. Where
-// deterministic egress matters, prefer the Linux device-bind path (grant
+// deterministic egress matters, use the device-bind path (on Linux, grant
 // CAP_NET_RAW) or pair the source bind with OS policy routing.
 package picnic
 
@@ -50,7 +56,7 @@ type Name string
 // exists and sets d.ControlContext (so it is honored even if a plain d.Control
 // is also present).
 func (n Name) BindDialer(d *net.Dialer) error {
-	ctl, err := n.Control()
+	ctl, err := n.control(true) // dialer may fall back to a source-address bind
 	if err != nil {
 		return err
 	}
@@ -60,12 +66,17 @@ func (n Name) BindDialer(d *net.Dialer) error {
 	return nil
 }
 
-// BindListenConfig configures lc so that sockets it creates are bound to this
+// BindListenConfig configures lc so that sockets it creates egress this
 // interface, covering the packet path: net.ListenConfig.ListenPacket (UDP) — and
 // thus QUIC, HTTP-3, and WebTransport stacks (e.g. quic-go) that run over a
 // net.PacketConn you supply — as well as net.ListenConfig.Listen for servers.
+//
+// It binds via the device socket option only; it does not use the dialer's
+// source-address fallback, which would collide with ListenPacket's own bind. On
+// a platform with no device option (and, for Linux, without CAP_NET_RAW) the
+// socket is therefore not interface-bound.
 func (n Name) BindListenConfig(lc *net.ListenConfig) error {
-	ctl, err := n.Control()
+	ctl, err := n.control(false) // ListenPacket owns the bind; no source fallback
 	if err != nil {
 		return err
 	}
@@ -75,27 +86,43 @@ func (n Name) BindListenConfig(lc *net.ListenConfig) error {
 
 // Control returns the interface-binding callback. Its signature matches both
 // net.Dialer.Control and net.ListenConfig.Control, so it can be attached to any
-// standard-library socket constructor; BindDialer and BindListenConfig are
-// conveniences over it. It returns an error immediately if the interface name is
-// empty or does not currently exist.
+// standard-library socket constructor. Like BindListenConfig it binds via the
+// device socket option only, without the dialer's source-address fallback (which
+// would collide with a ListenConfig's own bind) — use BindDialer for that. It
+// errors immediately if the interface name is empty or does not currently exist.
 func (n Name) Control() (func(network, address string, c syscall.RawConn) error, error) {
+	return n.control(false)
+}
+
+// control returns the binding callback for this interface. When allowSourceBind
+// is true (the dialer path) and the device option is unavailable, it falls back
+// to binding a source address; the ListenConfig path passes false, because
+// ListenPacket performs its own bind and a second bind would fail.
+func (n Name) control(allowSourceBind bool) (func(network, address string, c syscall.RawConn) error, error) {
 	if n == "" {
 		return nil, errors.New("picnic: empty interface name")
 	}
-	if _, err := net.InterfaceByName(string(n)); err != nil {
+	ifc, err := net.InterfaceByName(string(n))
+	if err != nil {
 		return nil, fmt.Errorf("picnic: interface %q: %w", string(n), err)
 	}
+	name, index := ifc.Name, ifc.Index
 
 	return func(network, address string, c syscall.RawConn) error {
+		want6 := familyIsV6(network, address)
 		var inner error
 		if err := c.Control(func(fd uintptr) {
-			// Prefer binding the device itself; on success the kernel selects
-			// the source address.
-			if bindToDevice(fd, string(n)) == nil {
+			// Prefer the device-bind socket option; it steers egress without
+			// binding the socket's address, so it composes with connect/bind.
+			if bindToDevice(fd, name, index, want6) == nil {
 				return
 			}
-			// Otherwise bind a source address belonging to the interface.
-			inner = n.bindSource(fd, network, address)
+			// Device option unavailable. A dialer can still steer egress by
+			// binding a source address; a ListenConfig cannot, so it is left to
+			// bind its own address normally.
+			if allowSourceBind {
+				inner = n.bindSourceFamily(fd, want6)
+			}
 		}); err != nil {
 			return err
 		}
@@ -103,10 +130,10 @@ func (n Name) Control() (func(network, address string, c syscall.RawConn) error,
 	}, nil
 }
 
-// bindSource binds fd to a source address of this interface matching the
-// destination's family.
-func (n Name) bindSource(fd uintptr, network, address string) error {
-	sa, err := n.sourceSockaddr(familyIsV6(network, address))
+// bindSourceFamily binds fd to a source address of this interface of the given
+// family. It is the dialer-only fallback used when no device option applies.
+func (n Name) bindSourceFamily(fd uintptr, want6 bool) error {
+	sa, err := n.sourceSockaddr(want6)
 	if err != nil {
 		return err
 	}
