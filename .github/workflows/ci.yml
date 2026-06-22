@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Use bash on every OS so commands tokenize identically; Windows' default
+# PowerShell mangles `go test` flags (e.g. splits -coverprofile=cover.out).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # The reason this package is its own repo: exercise the real per-OS socket
   # paths on real runners, not just Linux. macOS/Windows and non-root Linux take
