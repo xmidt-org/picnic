@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 Comcast Cable Communications Management, LLC
+# SPDX-License-Identifier: Apache-2.0
+name: cross-platform
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Use bash on every OS so commands tokenize identically; Windows' default
+# PowerShell mangles `go test` flags (e.g. splits -coverprofile=cover.out).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The reason this package is its own repo: exercise the real per-OS socket
+  # options on real runners. shared-go (ci.yml) already covers Linux, so this
+  # matrix is macOS + Windows.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: .
+      - run: go vet ./...
+      - run: go test -race -covermode=atomic -coverprofile=cover.out ./...
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: cover.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The SO_BINDTODEVICE success path is only reachable on Linux with CAP_NET_RAW
+  # (shared-go's Linux tests run unprivileged, covering the fallback). Run a
+  # capability-granted test binary to cover the device-bind branch.
+  linux-device-bind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: .
+      - run: go test -c -covermode=atomic -o picnic.test .
+      - run: sudo setcap cap_net_raw+ep ./picnic.test
+      - run: ./picnic.test -test.v -test.coverprofile=cover-device.out
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: cover-device.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Compile the BSD path (no hosted runners) to keep build tags honest.
+  crossbuild:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [freebsd, openbsd, netbsd, dragonfly]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: .
+      - run: GOOS=${{ matrix.goos }} go build ./...
