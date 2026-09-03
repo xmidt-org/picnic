@@ -14,7 +14,7 @@ jobs:
     # copyright, unit tests (-race) + coverage, build, and tagged releases.
     # Cross-platform (macOS/Windows/BSD) and CAP_NET_RAW coverage live in
     # cross-platform.yml, which shared-go does not provide.
-    uses: xmidt-org/shared-go/.github/workflows/ci.yml@2b9dd377731fc812fba09296b6c3bf5f9e6664ff # v4.13.1
+    uses: xmidt-org/shared-go/.github/workflows/ci.yml@7f729aa96350db9c0120bc3eb07f4fc062a77508 # v4.13.2
     with:
       release-type: library
     secrets: inherit
