@@ -35,7 +35,7 @@ jobs:
           cache-dependency-path: .
       - run: go vet ./...
       - run: go test -race -covermode=atomic -coverprofile=cover.out ./...
-      - uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: cover.out
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -55,7 +55,7 @@ jobs:
       - run: go test -c -covermode=atomic -o picnic.test .
       - run: sudo setcap cap_net_raw+ep ./picnic.test
       - run: ./picnic.test -test.v -test.coverprofile=cover-device.out
-      - uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: cover-device.out
           token: ${{ secrets.CODECOV_TOKEN }}
